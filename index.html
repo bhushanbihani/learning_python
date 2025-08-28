@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Role-Based Summarizer</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f4f4f9; padding: 20px; }
+    .container { max-width: 800px; margin: auto; background: #fff; padding: 20px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
+    h1 { text-align: center; margin-bottom: 20px; }
+    label { font-weight: bold; margin-top: 10px; display: block; }
+    select, input[type="file"], textarea, button { width: 100%; margin: 8px 0; padding: 10px; border-radius: 8px; border: 1px solid #ccc; }
+    textarea { min-height: 100px; resize: vertical; }
+    button { background: #4CAF50; color: white; border: none; cursor: pointer; font-weight: bold; }
+    button:disabled { background: #ccc; cursor: not-allowed; }
+    .result-card { margin-top: 15px; padding: 15px; background: #f9f9f9; border: 1px solid #ddd; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>AI Role-Based Summarizer</h1>
+
+    <label for="fileInput">Upload Document</label>
+    <input type="file" id="fileInput" accept="application/pdf,.doc,.docx">
+
+    <label for="roleSelect">Select Role</label>
+    <select id="roleSelect">
+      <option value="CEO">CEO</option>
+      <option value="Analyst">Analyst</option>
+      <option value="End User">End User</option>
+      <option value="Technical Lead">Technical Lead</option>
+      <option value="Manager">Manager</option>
+    </select>
+
+    <button id="summarizeBtn" disabled>Upload & Summarize</button>
+
+    <div id="status"></div>
+
+    <div class="result-card"><h3>Summary</h3><textarea id="summary"></textarea></div>
+    <div class="result-card"><h3>Sentiment</h3><textarea id="sentiment"></textarea></div>
+    <div class="result-card"><h3>Key Insights</h3><textarea id="insights"></textarea></div>
+    <div class="result-card"><h3>Action Items</h3><textarea id="actions"></textarea></div>
+    <div class="result-card"><h3>Risks</h3><textarea id="risks"></textarea></div>
+  </div>
+
+  <script>
+const GEN_PRESIGN_URL = "https://zhi4ag7zma.execute-api.us-east-1.amazonaws.com/dev/gen_presigned_url";
+const API_URL = "https://xj3pen8pga.execute-api.us-east-1.amazonaws.com/dev/filesummariser";
+
+const fileInput = document.getElementById("fileInput");
+const summarizeBtn = document.getElementById("summarizeBtn");
+const roleSelect = document.getElementById("roleSelect");
+const statusEl = document.getElementById("status");
+
+let selectedFile = null;
+
+fileInput.addEventListener("change", (e) => {
+  selectedFile = e.target.files[0];
+  summarizeBtn.disabled = !selectedFile;
+});
+
+async function getPresignedUrl(file) {
+  const bodyData = { fileName: file.name, contentType: file.type };
+  
+  console.log("=== Sending to Lambda ===");
+  console.log("HTTP Method: POST");
+  console.log("Headers:", { "Content-Type": "application/json" });
+  console.log("Body:", bodyData);
+
+  const resp = await fetch(GEN_PRESIGN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(bodyData)
+  });
+
+  console.log("Lambda response status:", resp.status);
+  const text = await resp.text();
+  console.log("Lambda raw response:", text);
+
+  if (!resp.ok) throw new Error(`Failed to get presigned URL: ${text}`);
+  return JSON.parse(text); // { url, key }
+}
+
+async function uploadFileToS3(file) {
+  const { url, key } = await getPresignedUrl(file);
+
+  console.log("Uploading file to S3:", key);
+
+  const uploadRes = await fetch(url, {
+    method: "PUT",
+    headers: { "Content-Type": file.type },
+    body: file
+  });
+
+  console.log("S3 upload response:", uploadRes.status);
+  if (!uploadRes.ok) throw new Error("Upload to S3 failed");
+  return key;
+}
+
+summarizeBtn.addEventListener("click", async () => {
+  if (!selectedFile) return alert("Please select a file.");
+
+  summarizeBtn.disabled = true;
+  statusEl.textContent = "Uploading...";
+
+  try {
+    const fileKey = await uploadFileToS3(selectedFile);
+
+    statusEl.textContent = "Processing...";
+    const resp = await fetch(API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fileKey, role: roleSelect.value })
+    });
+
+    console.log("Summarizer API response status:", resp.status);
+    const data = await resp.json();
+    console.log("Summarizer API response data:", data);
+
+    document.getElementById("summary").value = data.summary || "";
+    document.getElementById("sentiment").value = data.sentiment || "";
+    document.getElementById("insights").value = Array.isArray(data.insights) ? data.insights.join("\n") : (data.insights || "");
+    document.getElementById("actions").value = Array.isArray(data.actions) ? data.actions.join("\n") : (data.actions || "");
+    document.getElementById("risks").value = Array.isArray(data.risks) ? data.risks.join("\n") : (data.risks || "");
+
+    statusEl.textContent = "Done";
+  } catch (err) {
+    console.error(err);
+    alert("Error: " + err.message);
+    statusEl.textContent = "Error";
+  } finally {
+    summarizeBtn.disabled = false;
+  }
+});
+</script>
+
+</body>
+</html>
